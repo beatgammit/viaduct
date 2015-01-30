@@ -6,6 +6,9 @@
 #include <arpa/inet.h> 
 #include <errno.h>
 #include <string.h>
+#include <time.h>
+
+#define SEND_EVERY_SEC 5
 
 #include "lane.h"
 #include "vendor/cmp.h"
@@ -17,14 +20,18 @@ int os_write(struct client* this, const unsigned char* buf, int len) {
 	return write(this->fd, buf, len);
 }
 
-bool lane_msgpack_read(struct cmp_ctx_s *ctx, void *data, size_t limit) {
+bool lane_msgpack_read_buf(struct cmp_ctx_s *ctx, void *data, size_t limit) {
 	struct client* cl = (struct client*)ctx->buf;
-	return cl->read(cl, data, limit) == limit;
+	memcpy(data, cl->buf, limit);
+	cl->i += limit;
+	return true;
 }
 
-size_t lane_msgpack_write(struct cmp_ctx_s *ctx, const void *data, size_t limit) {
+size_t lane_msgpack_write_buf(struct cmp_ctx_s *ctx, const void *data, size_t limit) {
 	struct client* cl = (struct client*)ctx->buf;
-	return cl->write(cl, data, limit);
+	memcpy(cl->buf + cl->buf_len, data, limit);
+	cl->buf_len += limit;
+	return limit;
 }
 
 void print_errno(int err) {
@@ -105,6 +112,117 @@ int create_socket(char* addr, short port) {
 	return socketfd;
 }
 
+void hello_msgpack(client* cl, const char* realm, int realm_len, struct wamp_welcome_details* details) {
+	cl->i = 0;
+
+	cmp_ctx_t cmp;
+	cmp_init(&cmp, cl, NULL, lane_msgpack_write_buf);
+
+	cmp_write_array(&cmp, 3);
+	cmp_write_uint(&cmp, WAMP_HELLO);
+	cmp_write_str(&cmp, realm, realm_len);
+
+	// write details
+	cmp_write_map(&cmp, 1);
+	cmp_write_str(&cmp, "roles", 5);
+
+	cmp_write_map(&cmp, details->len);
+	for (int i = 0; i < details->len; i++) {
+		cmp_write_str(&cmp, details->roles[i].role, details->roles[i].len);
+		cmp_write_map(&cmp, 0);
+	}
+
+	lane_send_message(cl, cl->buf, cl->buf_len);
+}
+
+void on_message(client* cl, unsigned char* buf, int buf_len) {
+	cmp_ctx_t cmp;
+	cmp_init(&cmp, cl, lane_msgpack_read_buf, NULL);
+
+	int len;
+	cmp_read_array(&cmp, &len);
+
+	int msg_type;
+	cmp_read_uint(&cmp, &msg_type);
+
+	switch (msg_type) {
+	case WAMP_WELCOME: {
+		// TODO: store sess_id somewhere, if we care
+		int sess_id;
+		cmp_read_uint(&cmp, &sess_id);
+		break;
+	}
+	case WAMP_EVENT: {
+		printf("Received event\n");
+		cmp_object_t obj;
+		// TODO: don't care about sub id...
+		cmp_read_object(&cmp, &obj);
+		// TODO: don't care about pub id
+		cmp_read_object(&cmp, &obj);
+
+		int depth = 0;
+		// skip through the details map for now
+		do {
+			if (!cmp_read_object(&cmp, &obj)) {
+				printf("Handle error...\n");
+			} else {
+				switch (obj.type) {
+					case CMP_TYPE_FIXMAP:
+					case CMP_TYPE_MAP16:
+					case CMP_TYPE_MAP32:
+					case CMP_TYPE_FIXARRAY:
+					case CMP_TYPE_ARRAY16:
+					case CMP_TYPE_ARRAY32:
+						depth++;
+						break;
+				}
+			}
+		} while (depth > 0);
+
+		if (cmp_read_object(&cmp, &obj)) {
+			if (obj.type == CMP_TYPE_FIXARRAY || obj.type == CMP_TYPE_ARRAY16 || obj.type == CMP_TYPE_ARRAY32) {
+				for (int i = 0; i < obj.as.array_size; i++) {
+					uint32_t size;
+					char* buf;
+					if (!cmp_read_str(&cmp, buf, &size)) {
+						printf("Failed reading str\n");
+					} else {
+						printf("Arg[%d] -> %s\n", i, buf);
+					}
+				}
+			}
+		}
+		break;
+	 }
+	default:
+		// TODO: report warning that we don't support this message
+		break;
+	}
+}
+
+void send_event(client* cl, char* message, int len) {
+	cl->i = 0;
+	cl->buf_len = 0;
+
+	cmp_ctx_t cmp;
+	cmp_init(&cmp, cl, NULL, lane_msgpack_write_buf);
+
+	cl->next_id++;
+
+	printf("Before\n");
+	cmp_write_array(&cmp, 5);
+	cmp_write_uint(&cmp, WAMP_PUBLISH);
+	cmp_write_uint(&cmp, cl->next_id);
+	cmp_write_map(&cmp, 0);
+	printf("After\n");
+	cmp_write_str(&cmp, "messages", 8);
+	cmp_write_array(&cmp, 2);
+	cmp_write_str(&cmp, message, len);
+	cmp_write_str(&cmp, message, len);
+
+	lane_send_message(cl, cl->buf, cl->buf_len);
+}
+
 int main(int argc, char* argv[]) {
 	client a;
 
@@ -122,6 +240,15 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
+	wamp_role role = {"publisher", 9};
+	wamp_welcome_details details = {&role, 1};
+	hello_msgpack(&a, "turnpike.example", 16, &details);
+
+	a.buf_len = 0;
+	a.exp_len = 4;
+
+	lane_handle_message(&a);
+
 	// set socket as non-blocking
 	int flags = fcntl(a.fd, F_GETFL, 0);
 	if (flags < 0) {
@@ -137,16 +264,23 @@ int main(int argc, char* argv[]) {
 	a.buf_len = 0;
 	a.exp_len = 4;
 
-	cmp_ctx_t cmp;
-	cmp_init(&cmp, &a, lane_msgpack_read, lane_msgpack_write);
-
-	printf("Got this far\n");
-
-	/*
+	time_t last_sent = time(NULL);
+	time_t last_recv = 0;
 	for (;;) {
-		lane_handle_message(&a);
+		time_t now = time(NULL);
+		if (lane_handle_message(&a)) {
+			last_recv = now;
+		}
+		double diff = difftime(now, last_sent);
+		if (diff >= SEND_EVERY_SEC) {
+			printf("Time to send message\n");
+			send_event(&a, "some message", 12);
+			last_sent = now;
+		}
+		if (difftime(now, last_recv) >= 1 && SEND_EVERY_SEC - diff > 1) {
+			sleep(1);
+		}
 	}
-	*/
 
 	return 0;
 }

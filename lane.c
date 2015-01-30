@@ -1,6 +1,12 @@
 #include <stdbool.h>
 #include <unistd.h>
 
+#define DEBUG
+
+#ifdef DEBUG
+#include <stdio.h>
+#endif
+
 #include "lane.h"
 
 // lane_handshake handles raw socket handshaking
@@ -23,17 +29,23 @@ int lane_handshake(client* cl, int length, int serialization) {
 	}
 
 	if (buf[0] != MAGIC) {
-		// printf("Unexpected first byte\n");
+#ifdef DEBUG
+		printf("Unexpected first byte\n");
+#endif
 		return 1;
 	}
 
 	if ((buf[1] & 0xf) != serialization) {
-		// printf("serialization not agreed upon\n");
+#ifdef DEBUG
+		printf("serialization not agreed upon\n");
+#endif
 		return 1;
 	}
 
 	if ((buf[1] >> 4) != length) {
-		// printf("length not negotiated\n");
+#ifdef DEBUG
+		printf("length not negotiated\n");
+#endif
 	}
 
 	cl->msg_type = RAW_SOCKET_HEADER;
@@ -51,13 +63,17 @@ int lane_bytes_to_len(unsigned char* buf, int len) {
 	return ((int)(buf[0]) << 16) | ((int)(buf[1]) << 8) | buf[2];
 }
 
-int lane_handle_message(struct client* cl) {
+bool lane_handle_message(struct client* cl) {
 	int n = cl->read(cl, cl->buf+cl->buf_len, cl->exp_len);
 	cl->buf_len += n;
 	cl->exp_len -= n;
 
+#ifdef DEBUG
+	//printf("Read: %d, %d, %d\n", n, cl->buf_len, cl->exp_len);
+#endif
+
 	if (cl->exp_len > 0) {
-		return 0;
+		return false;
 	}
 
 	// we have enough data
@@ -77,9 +93,24 @@ int lane_handle_message(struct client* cl) {
 
 		cl->buf_len = 0;
 		cl->exp_len = lane_bytes_to_len(cl->buf+1, 3);
+		if (cl->exp_len > MAX_LENGTH) {
+			// TODO: handle too-long messages
+		}
 		cl->buf[cl->exp_len] = 0;
-		break;
+		return lane_handle_message(cl);
 	}
 	cl->msg_type = RAW_SOCKET_HEADER;
-	return 0;
+	return true;
+}
+
+void lane_write_header(client* cl, int len) {
+	unsigned char header[4];
+	header[0] = 0;
+	lane_len_to_bytes(len, header+1);
+	cl->write(cl, header, 4);
+}
+
+void lane_send_message(client* cl, unsigned char* buf, int len) {
+	lane_write_header(cl, len);
+	cl->write(cl, buf, len);
 }

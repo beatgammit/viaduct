@@ -32,7 +32,7 @@ lane.o: cmp.o lane.c lane.h
 $(TESTS): %: %.o liblane.so
 
 example: liblane.so main.c cmp.o
-	$(CC) $(LDFLAGS) $(TARGET_ARCH) $(LDLIBS) liblane.so cmp.o main.c -o example
+	$(CC) -std=c99 $(LDFLAGS) $(TARGET_ARCH) $(LDLIBS) liblane.so cmp.o main.c -o example
 
 clean:
 	rm -rf *.o test/*.o *.a *.so example $(TESTS) $(TEST_PROGS)
