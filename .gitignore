@@ -1,5 +1,18 @@
+# editor artifacts
+*.swp
+
+# build artifacts
 *.o
 *.a
 *.so
 example
 main
+tests
+
+# cmake artifacts
+CMakeCache.txt
+CTestTestfile.cmake
+cmake_install.cmake
+CMakeFiles
+Testing
+Makefile

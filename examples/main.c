@@ -6,25 +6,17 @@
 #include <arpa/inet.h> 
 #include <errno.h>
 #include <string.h>
+#include <time.h>
 
-#include "lib/lane.h"
-#include "cmp.h"
+#define SEND_EVERY_SEC 5
+
+#include "viaduct.h"
 
 int os_read(struct client* this, unsigned char* buf, int len) {
 	return read(this->fd, buf, len);
 }
 int os_write(struct client* this, const unsigned char* buf, int len) {
 	return write(this->fd, buf, len);
-}
-
-bool lane_msgpack_read(struct cmp_ctx_s *ctx, void *data, size_t limit) {
-	struct client* cl = (struct client*)ctx->buf;
-	return cl->read(cl, data, limit) == limit;
-}
-
-size_t lane_msgpack_write(struct cmp_ctx_s *ctx, const void *data, size_t limit) {
-	struct client* cl = (struct client*)ctx->buf;
-	return cl->write(cl, data, limit);
 }
 
 void print_errno(int err) {
@@ -108,6 +100,8 @@ int create_socket(char* addr, short port) {
 int main(int argc, char* argv[]) {
 	client a;
 
+	memset(&a, 0, sizeof(a));
+
 	a.fd = create_socket("127.0.0.1", 9000);
 	if (a.fd < 0) {
 		return 1;
@@ -115,10 +109,19 @@ int main(int argc, char* argv[]) {
 	a.read = os_read;
 	a.write = os_write;
 
-	if (lane_handshake(&a, MAX_LENGTH, RAW_SOCKET_MSGPACK)) {
+	if (viaduct_handshake(&a, MAX_LENGTH, RAW_SOCKET_MSGPACK)) {
 		printf("failed handshake\n");
 		return 1;
 	}
+
+	wamp_role role = {"publisher", 9};
+	wamp_welcome_details details = {&role, 1};
+	viaduct_send_hello(&a, "turnpike.example", 16, &details);
+
+	a.buf_len = 0;
+	a.exp_len = 4;
+
+	viaduct_handle_message(&a);
 
 	// set socket as non-blocking
 	int flags = fcntl(a.fd, F_GETFL, 0);
@@ -131,16 +134,26 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
-	memset(a.buf, 0, sizeof(a.buf));
-	a.processing = false;
+	a.msg_type = RAW_SOCKET_HEADER;
 	a.buf_len = 0;
 	a.exp_len = 4;
 
-	cmp_ctx_t cmp;
-	cmp_init(&cmp, &a, lane_msgpack_read, lane_msgpack_write);
-
+	time_t last_sent = time(NULL);
+	time_t last_recv = 0;
 	for (;;) {
-		lane_handle_message(&a);
+		time_t now = time(NULL);
+		if (viaduct_handle_message(&a)) {
+			last_recv = now;
+		}
+		double diff = difftime(now, last_sent);
+		if (diff >= SEND_EVERY_SEC) {
+			printf("Time to send message\n");
+			viaduct_publish_event(&a, "some message", 12);
+			last_sent = now;
+		}
+		if (difftime(now, last_recv) >= 1 && SEND_EVERY_SEC - diff > 1) {
+			sleep(1);
+		}
 	}
 
 	return 0;

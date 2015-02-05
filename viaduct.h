@@ -66,8 +66,9 @@ typedef struct wamp_welcome_details {
 	int len;
 } wamp_welcome_details;
 
-int lane_handshake(client* cl, int length, int serialization);
-bool lane_handle_message(struct client* cl);
-int lane_bytes_to_len(unsigned char* buf, int len);
-void lane_len_to_bytes(int len, unsigned char* buf);
-void lane_send_message(client* cl, unsigned char* buf, int len);
+int viaduct_handshake(client* cl, int length, int serialization);
+bool viaduct_handle_message(struct client* cl);
+int viaduct_bytes_to_len(unsigned char* buf, int len);
+void viaduct_len_to_bytes(int len, unsigned char* buf);
+void viaduct_send_hello(client* cl, const char* realm, int realm_len, struct wamp_welcome_details* details);
+void viaduct_publish_event(client* cl, const char* message, int msg_len);
