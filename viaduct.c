@@ -12,14 +12,14 @@
 
 #include "viaduct.h"
 
-void viaduct_send_message(client* cl, unsigned char* buf, int len);
+void viaduct_send_message(struct client* cl, uint8_t* buf, size_t len);
 
 // viaduct_handshake handles raw socket handshaking
 // returns 0 on success or a non-zero error code on failure
-int viaduct_handshake(client* cl, int length, int serialization) {
-	unsigned char buf[4] = {MAGIC, (length << 4) | serialization, 0, 0};
+int viaduct_handshake(struct client* cl, uint8_t length, uint8_t serialization) {
+	uint8_t buf[4] = {MAGIC, (length << 4) | serialization, 0, 0};
 
-	int n = cl->write(cl, buf, 4);
+	size_t n = cl->write(cl, buf, 4);
 	if (n != 4) {
 		return 1;
 	}
@@ -54,14 +54,14 @@ int viaduct_handshake(client* cl, int length, int serialization) {
 	return 0;
 }
 
-void viaduct_len_to_bytes(int len, unsigned char* buf) {
-	buf[0] = (unsigned char)(len >> 16);
-	buf[1] = (unsigned char)(len >> 8);
-	buf[2] = (unsigned char)(len);
+void viaduct_len_to_bytes(uint32_t len, uint8_t* buf) {
+	buf[0] = (uint8_t)(len >> 16);
+	buf[1] = (uint8_t)(len >> 8);
+	buf[2] = (uint8_t)(len);
 }
 
-int viaduct_bytes_to_len(unsigned char* buf, int len) {
-	return ((int)(buf[0]) << 16) | ((int)(buf[1]) << 8) | buf[2];
+uint32_t viaduct_bytes_to_len(uint8_t* buf) {
+	return ((uint32_t)(buf[0]) << 16) | ((uint32_t)(buf[1]) << 8) | buf[2];
 }
 
 #ifdef USE_MSGPACK
@@ -79,7 +79,7 @@ size_t viaduct_msgpack_write_buf(struct cmp_ctx_s *ctx, const void *data, size_t
 	return limit;
 }
 
-void hello_msgpack(struct client* cl, const char* realm, int realm_len, struct wamp_welcome_details* details) {
+void hello_msgpack(struct client* cl, const char* realm, size_t realm_len, struct wamp_welcome_details* details) {
 	cl->i = 0;
 
 	cmp_ctx_t cmp;
@@ -94,14 +94,14 @@ void hello_msgpack(struct client* cl, const char* realm, int realm_len, struct w
 	cmp_write_str(&cmp, "roles", 5);
 
 	cmp_write_map(&cmp, details->len);
-	for (int i = 0; i < details->len; i++) {
+	for (size_t i = 0; i < details->len; i++) {
 		cmp_write_str(&cmp, details->roles[i].role, details->roles[i].len);
 		cmp_write_map(&cmp, 0);
 	}
 }
 #endif
 
-void viaduct_send_hello(struct client* cl, const char* realm, int realm_len, struct wamp_welcome_details* details) {
+void viaduct_send_hello(struct client* cl, const char* realm, size_t realm_len, struct wamp_welcome_details* details) {
 #ifdef USE_MSGPACK
 	hello_msgpack(cl, realm, realm_len, details);
 #endif
@@ -110,7 +110,7 @@ void viaduct_send_hello(struct client* cl, const char* realm, int realm_len, str
 }
 
 bool viaduct_handle_message(struct client* cl) {
-	int n = cl->read(cl, cl->buf+cl->buf_len, cl->exp_len);
+	size_t n = cl->read(cl, cl->buf+cl->buf_len, cl->exp_len);
 	cl->buf_len += n;
 	cl->exp_len -= n;
 
@@ -135,10 +135,10 @@ bool viaduct_handle_message(struct client* cl) {
 	case RAW_SOCKET_HEADER:
 		// header processed
 		// TODO: check for invalid message type
-		cl->msg_type = (int)cl->buf[0];
+		cl->msg_type = cl->buf[0];
 
 		cl->buf_len = 0;
-		cl->exp_len = viaduct_bytes_to_len(cl->buf+1, 3);
+		cl->exp_len = viaduct_bytes_to_len(cl->buf+1);
 		if (cl->exp_len > MAX_LENGTH) {
 			// TODO: handle too-long messages
 		}
@@ -149,20 +149,20 @@ bool viaduct_handle_message(struct client* cl) {
 	return true;
 }
 
-void viaduct_write_header(client* cl, int len) {
-	unsigned char header[4];
+void viaduct_write_header(struct client* cl, size_t len) {
+	uint8_t header[4];
 	header[0] = 0;
 	viaduct_len_to_bytes(len, header+1);
 	cl->write(cl, header, 4);
 }
 
-void viaduct_send_message(client* cl, unsigned char* buf, int len) {
+void viaduct_send_message(struct client* cl, uint8_t* buf, size_t len) {
 	viaduct_write_header(cl, len);
 	cl->write(cl, buf, len);
 }
 
 #ifdef USE_MSGPACK
-void publish_msgpack(client* cl, const char* message, int len) {
+void publish_msgpack(struct client* cl, const char* message, size_t len) {
 	cl->i = 0;
 	cl->buf_len = 0;
 
@@ -195,7 +195,7 @@ void publish_msgpack(client* cl, const char* message, int len) {
 }
 #endif
 
-void viaduct_publish_event(client* cl, const char* message, int msg_len) {
+void viaduct_publish_event(struct client* cl, const char* message, size_t msg_len) {
 #ifdef DEBUG
 	printf("Sending: [%d] %s\n", msg_len, message);
 #endif

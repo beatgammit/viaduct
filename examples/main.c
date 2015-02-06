@@ -12,11 +12,17 @@
 
 #include "viaduct.h"
 
-int os_read(struct client* this, unsigned char* buf, int len) {
-	return read(this->fd, buf, len);
+struct socket_data {
+	int fd;
+};
+
+size_t os_read(struct client* this, uint8_t* buf, size_t len) {
+	struct socket_data* data = this->data;
+	return read(data->fd, buf, len);
 }
-int os_write(struct client* this, const unsigned char* buf, int len) {
-	return write(this->fd, buf, len);
+size_t os_write(struct client* this, const uint8_t* buf, size_t len) {
+	struct socket_data* data = this->data;
+	return write(data->fd, buf, len);
 }
 
 void print_errno(int err) {
@@ -98,12 +104,15 @@ int create_socket(char* addr, short port) {
 }
 
 int main(int argc, char* argv[]) {
-	client a;
+	struct client a;
+	struct socket_data data;
 
 	memset(&a, 0, sizeof(a));
+	memset(&data, 0, sizeof(data));
+	a.data = &data;
 
-	a.fd = create_socket("127.0.0.1", 9000);
-	if (a.fd < 0) {
+	data.fd = create_socket("127.0.0.1", 9000);
+	if (data.fd < 0) {
 		return 1;
 	}
 	a.read = os_read;
@@ -114,8 +123,8 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
-	wamp_role role = {"publisher", 9};
-	wamp_welcome_details details = {&role, 1};
+	struct wamp_role role = {"publisher", 9};
+	struct wamp_welcome_details details = {&role, 1};
 	viaduct_send_hello(&a, "turnpike.example", 16, &details);
 
 	a.buf_len = 0;
@@ -124,12 +133,12 @@ int main(int argc, char* argv[]) {
 	viaduct_handle_message(&a);
 
 	// set socket as non-blocking
-	int flags = fcntl(a.fd, F_GETFL, 0);
+	int flags = fcntl(data.fd, F_GETFL, 0);
 	if (flags < 0) {
 		printf("error getting flags for fd\n");
 		return 1;
 	}
-	if (fcntl(a.fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+	if (fcntl(data.fd, F_SETFL, flags | O_NONBLOCK) < 0) {
 		printf("error setting socket to non-blocking mode\n");
 		return 1;
 	}

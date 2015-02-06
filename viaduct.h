@@ -1,9 +1,11 @@
-#define BUF_SIZE 256
+#include <stdint.h>
+
+#define BUF_SIZE 512
 #define MAX_LENGTH 0xf
 #define RAW_SOCKET_JSON 1
 #define RAW_SOCKET_MSGPACK 2
 
-#define RAW_SOCKET_HEADER -1
+#define RAW_SOCKET_HEADER 0xff
 #define RAW_SOCKET_MESSAGE 0
 #define RAW_SOCKET_PING 1
 #define RAW_SOCKET_PONG 2
@@ -40,35 +42,34 @@
 
 #define MAGIC 0x7f
 
-typedef struct client {
-	int fd;
-	unsigned char buf[BUF_SIZE];
-	int buf_len;
-	int exp_len;
-	int msg_type;
-	int i;
-	int next_id;
+struct client {
+	void* data;
 
-	int (* read)(struct client*, unsigned char*, int);
-	int (* write)(struct client*, const unsigned char*, int);
+	uint8_t buf[BUF_SIZE];
+	size_t buf_len;
+	size_t exp_len;
+	uint8_t msg_type;
+	size_t i;
+	uint64_t next_id;
 
-	void (* on_message)(const unsigned char*, int);
-} client;
+	size_t (* read)(struct client*, uint8_t*, size_t);
+	size_t (* write)(struct client*, const uint8_t*, size_t);
 
-typedef struct wamp_role {
+	void (* on_message)(const uint8_t*, size_t);
+};
+
+struct wamp_role {
 	char* role;
-	int len;
+	size_t len;
 	// TODO: advanced features per role
-} wamp_role;
+};
 
-typedef struct wamp_welcome_details {
-	wamp_role* roles;
-	int len;
-} wamp_welcome_details;
+struct wamp_welcome_details {
+	struct wamp_role* roles;
+	size_t len;
+};
 
-int viaduct_handshake(client* cl, int length, int serialization);
+int viaduct_handshake(struct client* cl, uint8_t length, uint8_t serialization);
 bool viaduct_handle_message(struct client* cl);
-int viaduct_bytes_to_len(unsigned char* buf, int len);
-void viaduct_len_to_bytes(int len, unsigned char* buf);
-void viaduct_send_hello(client* cl, const char* realm, int realm_len, struct wamp_welcome_details* details);
-void viaduct_publish_event(client* cl, const char* message, int msg_len);
+void viaduct_send_hello(struct client* cl, const char* realm, size_t realm_len, struct wamp_welcome_details* details);
+void viaduct_publish_event(struct client* cl, const char* message, size_t msg_len);
