@@ -1,7 +1,7 @@
 #include <stdint.h>
 
-#define BUF_SIZE 512
-#define MAX_LENGTH 0xf
+#define MAX_LENGTH 0
+#define BUF_SIZE (2 << (9 + MAX_LENGTH))
 #define RAW_SOCKET_JSON 1
 #define RAW_SOCKET_MSGPACK 2
 
@@ -42,6 +42,55 @@
 
 #define MAGIC 0x7f
 
+#define TYPE_INT (1 << 0)
+#define TYPE_BOOL (1 << 1)
+#define TYPE_STRING (1 << 2)
+#define TYPE_LIST (1 << 3)
+#define TYPE_DICT (1 << 4)
+#define TYPE_FLOAT (1 << 5)
+
+struct wamp_type;
+
+struct wamp_key_val {
+	size_t key_len;
+	char* key;
+	struct wamp_type* val;
+};
+
+typedef int64_t wamp_type_int;
+
+typedef bool wamp_type_bool;
+
+typedef struct {
+	size_t len;
+	char* val;
+} wamp_type_string;
+
+typedef struct {
+	size_t len;
+	struct wamp_type* val;
+} wamp_type_list;
+
+typedef struct {
+	size_t len;
+	struct wamp_key_val* entries;
+} wamp_type_dict;
+
+typedef double wamp_type_float;
+
+struct wamp_type {
+	int8_t type;
+
+	union {
+		wamp_type_int integer;
+		wamp_type_bool boolean;
+		wamp_type_string string;
+		wamp_type_list list;
+		wamp_type_dict dict;
+		wamp_type_float number;
+	};
+};
+
 struct client {
 	void* data;
 
@@ -72,4 +121,4 @@ struct wamp_welcome_details {
 int viaduct_handshake(struct client* cl, uint8_t length, uint8_t serialization);
 bool viaduct_handle_message(struct client* cl);
 void viaduct_send_hello(struct client* cl, const char* realm, size_t realm_len, struct wamp_welcome_details* details);
-void viaduct_publish_event(struct client* cl, const char* message, size_t msg_len);
+void viaduct_publish(struct client* cl, const wamp_type_string topic, const wamp_type_list* args, const wamp_type_dict* kw_args);

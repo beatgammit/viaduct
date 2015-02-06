@@ -157,7 +157,23 @@ int main(int argc, char* argv[]) {
 		double diff = difftime(now, last_sent);
 		if (diff >= SEND_EVERY_SEC) {
 			printf("Time to send message\n");
-			viaduct_publish_event(&a, "some message", 12);
+
+			wamp_type_list args;
+			struct wamp_type arg_list[] = {
+				{
+					.type = TYPE_STRING,
+					.string = {.len = 12, .val = "some message"},
+				},
+				{
+					.type = TYPE_STRING,
+					.string = {.len = 12, .val = "some message"},
+				},
+			};
+			args.len = 2;
+			args.val = arg_list;
+
+			wamp_type_string topic = {.len = 8, .val ="messages"};
+			viaduct_publish(&a, topic, &args, NULL);
 			last_sent = now;
 		}
 		if (difftime(now, last_recv) >= 1 && SEND_EVERY_SEC - diff > 1) {

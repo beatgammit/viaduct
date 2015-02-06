@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #ifdef DEBUG
+#include <stdarg.h>
 #include <stdio.h>
 #endif
 
@@ -11,6 +12,15 @@
 #endif
 
 #include "viaduct.h"
+
+void debug(char* fmt, ...) {
+#ifdef DEBUG
+	va_list args;
+	va_start(args, fmt);
+	vprintf(fmt, args);
+	va_end(args);
+#endif
+}
 
 void viaduct_send_message(struct client* cl, uint8_t* buf, size_t len);
 
@@ -30,23 +40,17 @@ int viaduct_handshake(struct client* cl, uint8_t length, uint8_t serialization) 
 	}
 
 	if (buf[0] != MAGIC) {
-#ifdef DEBUG
-		printf("Unexpected first byte\n");
-#endif
+		debug("Unexpected first byte\n");
 		return 1;
 	}
 
 	if ((buf[1] & 0xf) != serialization) {
-#ifdef DEBUG
-		printf("serialization not agreed upon\n");
-#endif
+		debug("serialization not agreed upon\n");
 		return 1;
 	}
 
 	if ((buf[1] >> 4) != length) {
-#ifdef DEBUG
-		printf("length not negotiated\n");
-#endif
+		debug("length not negotiated\n");
 	}
 
 	cl->msg_type = RAW_SOCKET_HEADER;
@@ -114,9 +118,7 @@ bool viaduct_handle_message(struct client* cl) {
 	cl->buf_len += n;
 	cl->exp_len -= n;
 
-#ifdef DEBUG
-	//printf("Read: %d, %d, %d\n", n, cl->buf_len, cl->exp_len);
-#endif
+	//debug("Read: %d, %d, %d\n", n, cl->buf_len, cl->exp_len);
 
 	if (cl->exp_len > 0) {
 		return false;
@@ -161,8 +163,54 @@ void viaduct_send_message(struct client* cl, uint8_t* buf, size_t len) {
 	cl->write(cl, buf, len);
 }
 
+uint64_t viaduct_next_request_id(struct client* cl) {
+	cl->next_id++;
+	return cl->next_id;
+}
+
 #ifdef USE_MSGPACK
-void publish_msgpack(struct client* cl, const char* message, size_t len) {
+void msgpack_write_type(cmp_ctx_t* ctx, struct wamp_type type);
+
+void msgpack_write_list(cmp_ctx_t* ctx, wamp_type_list list) {
+	cmp_write_array(ctx, list.len);
+	for (int i = 0; i < list.len; i++) {
+		msgpack_write_type(ctx, list.val[i]);
+	}
+}
+
+void msgpack_write_dict(cmp_ctx_t* ctx, wamp_type_dict dict) {
+	cmp_write_array(ctx, dict.len);
+	for (int i = 0; i < dict.len; i++) {
+		struct wamp_key_val entry = dict.entries[i];
+		cmp_write_str(ctx, entry.key, entry.key_len);
+		msgpack_write_type(ctx, *entry.val);
+	}
+}
+
+void msgpack_write_type(cmp_ctx_t* ctx, struct wamp_type type) {
+	switch (type.type) {
+	case TYPE_INT:
+		cmp_write_sint(ctx, type.integer);
+		break;
+	case TYPE_BOOL:
+		cmp_write_bool(ctx, type.boolean);
+		break;
+	case TYPE_STRING:
+		cmp_write_str(ctx, type.string.val, type.string.len);
+		break;
+	case TYPE_LIST:
+		msgpack_write_list(ctx, type.list);
+		break;
+	case TYPE_DICT:
+		msgpack_write_dict(ctx, type.dict);
+		break;
+	case TYPE_FLOAT:
+		cmp_write_double(ctx, type.number);
+		break;
+	}
+}
+
+void publish_msgpack(struct client* cl, const wamp_type_string topic, const wamp_type_list* args, const wamp_type_dict* kw_args) {
 	cl->i = 0;
 	cl->buf_len = 0;
 
@@ -171,35 +219,44 @@ void publish_msgpack(struct client* cl, const char* message, size_t len) {
 
 	cl->next_id++;
 
-#ifdef DEBUG
-	printf("Before\n");
-#endif
-	cmp_write_array(&cmp, 5);
+	int msg_len = 4;
+	if (kw_args != NULL && kw_args->len > 0) {
+		msg_len = 6;
+	} else if (args != NULL && args->len > 0) {
+		msg_len = 5;
+	}
+	debug("msg_len: %d\n", msg_len);
+	cmp_write_array(&cmp, msg_len);
+
 	// message type
 	cmp_write_uint(&cmp, WAMP_PUBLISH);
 	// request id
-	cmp_write_uint(&cmp, cl->next_id);
+	cmp_write_uint(&cmp, viaduct_next_request_id(cl));
 	// options
 	cmp_write_map(&cmp, 0);
-#ifdef DEBUG
-	printf("After\n");
-#endif
+	debug("After\n");
 	// topic
-	cmp_write_str(&cmp, "messages", 8);
-	// arguments
-	cmp_write_array(&cmp, 2);
-	cmp_write_str(&cmp, message, len);
-	cmp_write_str(&cmp, message, len);
+	cmp_write_str(&cmp, topic.val, topic.len);
+	if (msg_len > 4) {
+		if (args == NULL) {
+			cmp_write_array(&cmp, 0);
+		} else {
+			debug("args: %d\n", args->len);
+			msgpack_write_list(&cmp, *args);
+		}
+	}
 
+	if (msg_len > 5) {
+		debug("kw_args: %d\n", kw_args->len);
+		msgpack_write_dict(&cmp, *kw_args);
+	}
 	viaduct_send_message(cl, cl->buf, cl->buf_len);
 }
 #endif
 
-void viaduct_publish_event(struct client* cl, const char* message, size_t msg_len) {
-#ifdef DEBUG
-	printf("Sending: [%d] %s\n", msg_len, message);
-#endif
+void viaduct_publish(struct client* cl, const wamp_type_string topic, const wamp_type_list* args, const wamp_type_dict* kw_args) {
+	//debug("Sending: [%d] %s\n", msg_len, message);
 #ifdef USE_MSGPACK
-	publish_msgpack(cl, message, msg_len);
+	publish_msgpack(cl, topic, args, kw_args);
 #endif
 }
