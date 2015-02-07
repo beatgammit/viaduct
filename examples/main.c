@@ -16,11 +16,11 @@ struct socket_data {
 	int fd;
 };
 
-size_t os_read(struct client* this, uint8_t* buf, size_t len) {
+size_t os_read(struct wamp_client* this, uint8_t* buf, size_t len) {
 	struct socket_data* data = this->data;
 	return read(data->fd, buf, len);
 }
-size_t os_write(struct client* this, const uint8_t* buf, size_t len) {
+size_t os_write(struct wamp_client* this, const uint8_t* buf, size_t len) {
 	struct socket_data* data = this->data;
 	return write(data->fd, buf, len);
 }
@@ -104,7 +104,7 @@ int create_socket(char* addr, short port) {
 }
 
 int main(int argc, char* argv[]) {
-	struct client a;
+	struct wamp_client a;
 	struct socket_data data;
 
 	memset(&a, 0, sizeof(a));
@@ -118,14 +118,28 @@ int main(int argc, char* argv[]) {
 	a.read = os_read;
 	a.write = os_write;
 
-	if (viaduct_handshake(&a, MAX_LENGTH, RAW_SOCKET_MSGPACK)) {
+	struct raw_socket_options opts = {
+		.length = MAX_LENGTH,
+		.serialization = RAW_SOCKET_MSGPACK,
+		.serialize = serialize_msgpack,
+	};
+	if (viaduct_handshake(&a, opts)) {
 		printf("failed handshake\n");
 		return 1;
 	}
 
-	struct wamp_role role = {"publisher", 9};
-	struct wamp_welcome_details details = {&role, 1};
-	viaduct_send_hello(&a, "turnpike.example", 16, &details);
+	wamp_type_dict details = {
+		.len = 1,
+	};
+	struct wamp_key_val detail_list[] = {
+		{ .key = "roles", .key_len = 5, .val = { .type = TYPE_DICT, .dict = { .len = 1 } } },
+	};
+	details.entries = detail_list;
+	struct wamp_key_val roles[] = {
+		{ .key = "publisher", .key_len = 9, .val = viaduct_empty_dict() },
+	};
+	detail_list[0].val.dict.entries = roles;
+	viaduct_join_realm(&a, "turnpike.example", 16, details);
 
 	a.buf_len = 0;
 	a.exp_len = 4;
@@ -173,7 +187,7 @@ int main(int argc, char* argv[]) {
 			args.val = arg_list;
 
 			wamp_type_string topic = {.len = 8, .val ="messages"};
-			viaduct_publish(&a, topic, &args, NULL);
+			viaduct_publish(&a, NULL, topic, &args, NULL);
 			last_sent = now;
 		}
 		if (difftime(now, last_recv) >= 1 && SEND_EVERY_SEC - diff > 1) {

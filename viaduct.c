@@ -7,9 +7,7 @@
 #include <stdio.h>
 #endif
 
-#ifdef USE_MSGPACK
 #include "vendor/cmp.h"
-#endif
 
 #include "viaduct.h"
 
@@ -22,17 +20,26 @@ void debug(char* fmt, ...) {
 #endif
 }
 
-void viaduct_send_message(struct client* cl, uint8_t* buf, size_t len);
+void viaduct_send_message(struct wamp_client* cl, uint8_t* buf, size_t len);
+
+struct wamp_type viaduct_empty_dict() {
+	struct wamp_type t = { TYPE_DICT };
+	t.dict.len = 0;
+	return t;
+}
 
 // viaduct_handshake handles raw socket handshaking
 // returns 0 on success or a non-zero error code on failure
-int viaduct_handshake(struct client* cl, uint8_t length, uint8_t serialization) {
-	uint8_t buf[4] = {MAGIC, (length << 4) | serialization, 0, 0};
+int viaduct_handshake(struct wamp_client* cl, struct raw_socket_options opts) {
+	uint8_t buf[4] = {MAGIC, (opts.length << 4) | opts.serialization, 0, 0};
 
 	size_t n = cl->write(cl, buf, 4);
 	if (n != 4) {
 		return 1;
 	}
+
+	cl->exp_len = 4;
+	cl->buf_len = 0;
 
 	n = cl->read(cl, buf, 4);
 	if (n != 4) {
@@ -44,16 +51,19 @@ int viaduct_handshake(struct client* cl, uint8_t length, uint8_t serialization) 
 		return 1;
 	}
 
-	if ((buf[1] & 0xf) != serialization) {
+	if ((buf[1] & 0xf) != opts.serialization) {
 		debug("serialization not agreed upon\n");
 		return 1;
 	}
 
-	if ((buf[1] >> 4) != length) {
+	if ((buf[1] >> 4) != opts.length) {
 		debug("length not negotiated\n");
 	}
 
 	cl->msg_type = RAW_SOCKET_HEADER;
+	cl->buf_len = 0;
+	cl->exp_len = 4;
+	cl->serialize = opts.serialize;
 
 	return 0;
 }
@@ -68,52 +78,32 @@ uint32_t viaduct_bytes_to_len(uint8_t* buf) {
 	return ((uint32_t)(buf[0]) << 16) | ((uint32_t)(buf[1]) << 8) | buf[2];
 }
 
-#ifdef USE_MSGPACK
-bool viaduct_msgpack_read_buf(struct cmp_ctx_s *ctx, void *data, size_t limit) {
-	struct client* cl = (struct client*)ctx->buf;
-	memcpy(data, cl->buf, limit);
-	cl->i += limit;
-	return true;
-}
-
-size_t viaduct_msgpack_write_buf(struct cmp_ctx_s *ctx, const void *data, size_t limit) {
-	struct client* cl = (struct client*)ctx->buf;
-	memcpy(cl->buf + cl->buf_len, data, limit);
-	cl->buf_len += limit;
-	return limit;
-}
-
-void hello_msgpack(struct client* cl, const char* realm, size_t realm_len, struct wamp_welcome_details* details) {
-	cl->i = 0;
-
-	cmp_ctx_t cmp;
-	cmp_init(&cmp, cl, NULL, viaduct_msgpack_write_buf);
-
-	cmp_write_array(&cmp, 3);
-	cmp_write_uint(&cmp, WAMP_HELLO);
-	cmp_write_str(&cmp, realm, realm_len);
-
-	// write details
-	cmp_write_map(&cmp, 1);
-	cmp_write_str(&cmp, "roles", 5);
-
-	cmp_write_map(&cmp, details->len);
-	for (size_t i = 0; i < details->len; i++) {
-		cmp_write_str(&cmp, details->roles[i].role, details->roles[i].len);
-		cmp_write_map(&cmp, 0);
+uint8_t num_bits_set(uint8_t val) {
+	uint8_t ret = 0;
+	while (val > 0) {
+		if (val & 1) {
+			ret++;
+		}
+		val >>= 1;
 	}
+	return ret;
 }
-#endif
 
-void viaduct_send_hello(struct client* cl, const char* realm, size_t realm_len, struct wamp_welcome_details* details) {
-#ifdef USE_MSGPACK
-	hello_msgpack(cl, realm, realm_len, details);
-#endif
-
+void viaduct_join_realm(struct wamp_client* cl, const char* realm, size_t realm_len, wamp_type_dict details) {
+	struct wamp_type msg[3] = {
+		{ TYPE_INT, },
+		{ TYPE_STRING },
+		{ TYPE_DICT },
+	};
+	msg[0].integer = WAMP_HELLO;
+	msg[1].string.len = realm_len;
+	msg[1].string.val = realm;
+	wamp_type_list msglist = { 3, msg };
+	cl->serialize(cl, msglist);
 	viaduct_send_message(cl, cl->buf, cl->buf_len);
 }
 
-bool viaduct_handle_message(struct client* cl) {
+bool viaduct_handle_message(struct wamp_client* cl) {
 	size_t n = cl->read(cl, cl->buf+cl->buf_len, cl->exp_len);
 	cl->buf_len += n;
 	cl->exp_len -= n;
@@ -148,42 +138,45 @@ bool viaduct_handle_message(struct client* cl) {
 		return viaduct_handle_message(cl);
 	}
 	cl->msg_type = RAW_SOCKET_HEADER;
+	cl->buf_len = 0;
+	cl->exp_len = 4;
 	return true;
 }
 
-void viaduct_write_header(struct client* cl, size_t len) {
+void viaduct_write_header(struct wamp_client* cl, size_t len) {
 	uint8_t header[4];
 	header[0] = 0;
 	viaduct_len_to_bytes(len, header+1);
 	cl->write(cl, header, 4);
 }
 
-void viaduct_send_message(struct client* cl, uint8_t* buf, size_t len) {
+void viaduct_send_message(struct wamp_client* cl, uint8_t* buf, size_t len) {
 	viaduct_write_header(cl, len);
 	cl->write(cl, buf, len);
 }
 
-uint64_t viaduct_next_request_id(struct client* cl) {
+uint64_t viaduct_next_request_id(struct wamp_client* cl) {
 	cl->next_id++;
 	return cl->next_id;
 }
 
-#ifdef USE_MSGPACK
 void msgpack_write_type(cmp_ctx_t* ctx, struct wamp_type type);
 
 void msgpack_write_list(cmp_ctx_t* ctx, wamp_type_list list) {
 	cmp_write_array(ctx, list.len);
-	for (int i = 0; i < list.len; i++) {
+	int i;
+	for (i = 0; i < list.len; i++) {
 		msgpack_write_type(ctx, list.val[i]);
 	}
 }
 
 void msgpack_write_dict(cmp_ctx_t* ctx, wamp_type_dict dict) {
-	cmp_write_array(ctx, dict.len);
-	for (int i = 0; i < dict.len; i++) {
+	cmp_write_map(ctx, dict.len);
+	int i;
+	for (i = 0; i < dict.len; i++) {
 		struct wamp_key_val entry = dict.entries[i];
 		cmp_write_str(ctx, entry.key, entry.key_len);
-		msgpack_write_type(ctx, *entry.val);
+		msgpack_write_type(ctx, entry.val);
 	}
 }
 
@@ -210,53 +203,64 @@ void msgpack_write_type(cmp_ctx_t* ctx, struct wamp_type type) {
 	}
 }
 
-void publish_msgpack(struct client* cl, const wamp_type_string topic, const wamp_type_list* args, const wamp_type_dict* kw_args) {
-	cl->i = 0;
-	cl->buf_len = 0;
+bool viaduct_msgpack_read_buf(struct cmp_ctx_s *ctx, void *data, size_t limit) {
+	struct wamp_client* cl = (struct wamp_client*)(ctx->buf);
+	memcpy(data, cl->buf, limit);
+	cl->i += limit;
+	return true;
+}
 
+size_t viaduct_msgpack_write_buf(struct cmp_ctx_s *ctx, const void *data, size_t limit) {
+	struct wamp_client* cl = (struct wamp_client*)(ctx->buf);
+	memcpy(cl->buf + cl->buf_len, data, limit);
+	cl->buf_len += limit;
+	return limit;
+}
+
+void serialize_msgpack(struct wamp_client* cl, const wamp_type_list msg) {
 	cmp_ctx_t cmp;
 	cmp_init(&cmp, cl, NULL, viaduct_msgpack_write_buf);
 
-	cl->next_id++;
+	cl->i = 0;
+	cl->buf_len = 0;
 
-	int msg_len = 4;
-	if (kw_args != NULL && kw_args->len > 0) {
-		msg_len = 6;
-	} else if (args != NULL && args->len > 0) {
-		msg_len = 5;
-	}
-	debug("msg_len: %d\n", msg_len);
-	cmp_write_array(&cmp, msg_len);
-
-	// message type
-	cmp_write_uint(&cmp, WAMP_PUBLISH);
-	// request id
-	cmp_write_uint(&cmp, viaduct_next_request_id(cl));
-	// options
-	cmp_write_map(&cmp, 0);
-	debug("After\n");
-	// topic
-	cmp_write_str(&cmp, topic.val, topic.len);
-	if (msg_len > 4) {
-		if (args == NULL) {
-			cmp_write_array(&cmp, 0);
-		} else {
-			debug("args: %d\n", args->len);
-			msgpack_write_list(&cmp, *args);
-		}
-	}
-
-	if (msg_len > 5) {
-		debug("kw_args: %d\n", kw_args->len);
-		msgpack_write_dict(&cmp, *kw_args);
-	}
+	msgpack_write_list(&cmp, msg);
 	viaduct_send_message(cl, cl->buf, cl->buf_len);
 }
-#endif
 
-void viaduct_publish(struct client* cl, const wamp_type_string topic, const wamp_type_list* args, const wamp_type_dict* kw_args) {
-	//debug("Sending: [%d] %s\n", msg_len, message);
-#ifdef USE_MSGPACK
-	publish_msgpack(cl, topic, args, kw_args);
-#endif
+void viaduct_publish(struct wamp_client* cl, const wamp_type_dict* options, const wamp_type_string topic, const wamp_type_list* args, const wamp_type_dict* kw_args) {
+	int msg_len = 4;
+
+	struct wamp_type msg[6] = {
+		{ TYPE_INT },
+		{ TYPE_INT },
+		{ TYPE_DICT },
+		{ TYPE_STRING },
+		{ TYPE_LIST },
+		{ TYPE_DICT },
+	};
+	msg[0].integer = WAMP_PUBLISH;
+	msg[1].integer = viaduct_next_request_id(cl);
+	msg[3].string = topic;
+	if (options == NULL) {
+		msg[2].dict.len = 0;
+	} else {
+		msg[2].dict = *options;
+	}
+
+	if (kw_args != NULL && kw_args->len > 0) {
+		if (args == NULL ) {
+			msg[4].list.len = 0;
+		} else {
+			msg[4].list = *args;
+		}
+		msg[5].dict = *kw_args;
+	} else if (args != NULL && args->len > 0) {
+		msg_len = 5;
+		msg[4].list = *args;
+	}
+
+	wamp_type_list msglist = { msg_len, msg };
+	cl->serialize(cl, msglist);
 }
+

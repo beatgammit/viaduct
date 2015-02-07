@@ -1,3 +1,6 @@
+#ifndef __VIADUCT_H__
+#define __VIADUCT_H__
+
 #include <stdint.h>
 
 #define MAX_LENGTH 0
@@ -49,13 +52,11 @@
 #define TYPE_DICT (1 << 4)
 #define TYPE_FLOAT (1 << 5)
 
+#define ROLE_PUBLISHER (1 << 0)
+
 struct wamp_type;
 
-struct wamp_key_val {
-	size_t key_len;
-	char* key;
-	struct wamp_type* val;
-};
+struct wamp_key_val;
 
 typedef int64_t wamp_type_int;
 
@@ -63,7 +64,7 @@ typedef bool wamp_type_bool;
 
 typedef struct {
 	size_t len;
-	char* val;
+	const char* val;
 } wamp_type_string;
 
 typedef struct {
@@ -91,7 +92,13 @@ struct wamp_type {
 	};
 };
 
-struct client {
+struct wamp_key_val {
+	size_t key_len;
+	char* key;
+	struct wamp_type val;
+};
+
+struct wamp_client {
 	void* data;
 
 	uint8_t buf[BUF_SIZE];
@@ -101,24 +108,36 @@ struct client {
 	size_t i;
 	uint64_t next_id;
 
-	size_t (* read)(struct client*, uint8_t*, size_t);
-	size_t (* write)(struct client*, const uint8_t*, size_t);
+	size_t (* read)(struct wamp_client*, uint8_t*, size_t);
+	size_t (* write)(struct wamp_client*, const uint8_t*, size_t);
+
+	void (* serialize)(struct wamp_client*, wamp_type_list);
 
 	void (* on_message)(const uint8_t*, size_t);
 };
 
-struct wamp_role {
-	char* role;
-	size_t len;
-	// TODO: advanced features per role
+struct raw_socket_options {
+	uint8_t length;
+	uint8_t serialization;
+
+	void (* serialize)(struct wamp_client*, wamp_type_list);
 };
 
-struct wamp_welcome_details {
-	struct wamp_role* roles;
-	size_t len;
-};
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-int viaduct_handshake(struct client* cl, uint8_t length, uint8_t serialization);
-bool viaduct_handle_message(struct client* cl);
-void viaduct_send_hello(struct client* cl, const char* realm, size_t realm_len, struct wamp_welcome_details* details);
-void viaduct_publish(struct client* cl, const wamp_type_string topic, const wamp_type_list* args, const wamp_type_dict* kw_args);
+int viaduct_handshake(struct wamp_client* cl, struct raw_socket_options);
+bool viaduct_handle_message(struct wamp_client* cl);
+void viaduct_join_realm(struct wamp_client* cl, const char* realm, size_t realm_len, wamp_type_dict details);
+void viaduct_publish(struct wamp_client* cl, const wamp_type_dict* options, const wamp_type_string topic, const wamp_type_list* args, const wamp_type_dict* kw_args);
+
+void serialize_msgpack(struct wamp_client* cl, wamp_type_list msg);
+
+struct wamp_type viaduct_empty_dict();
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
